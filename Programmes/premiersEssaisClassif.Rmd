@@ -1,0 +1,78 @@
+---
+title: "Premiers essais de classification"
+author: "Thomas Pilaud"
+date: "1 novembre 2016"
+output: html_document
+---
+
+```{r, warning=F, message=F}
+require(knitr)
+require(dplyr)
+require(ggplot2)
+```
+
+```{r setup, echo = F}
+opts_knit$set(root.dir = normalizePath('../'))
+```
+
+```{r}
+load("Donnees/table.appr.RData")
+don <- table.appr[,3:26]
+```
+
+On regarde l'évolution du rapport variance intra / variance totale en fonction de k
+```{r}
+res=vector("numeric", 19)
+for(k in 2:20){
+  kmeans.k=kmeans(don, k)
+  res[k-1]=kmeans.k$tot.withinss/kmeans.k$totss
+}
+plot(2:20, res, type="b")
+```
+
+
+On commence par faire un k-means avec 4, 7 et 10 centres pour voir ce qui se passe
+```{r}
+gp4 <- kmeans(don,4)
+gp7 <- kmeans(don,7)
+gp10 <- kmeans(don,10)
+```
+
+On trace les centres des classes ainsi que 10 station.jour pour chaque classe pris au hasard
+```{r fig.width=14, fig.height=10}
+table.appr$gp4_class <- gp4$cluster
+table.appr$gp7_class <- gp7$cluster
+table.appr$gp10_class <- gp10$cluster
+par(mfrow=c(2,2))
+for(i in 1:4){
+  plot(0:23, gp4$centers[i,], type="l", col="blue", lwd=3, xlab="", ylab="", ylim=c(0,1))
+  df=subset(table.appr, gp4_class == i)
+  ech=sample(1:nrow(df), 10)
+  df=df[ech,]
+  for(j in 1:nrow(df)){
+    lines(0:23, df[j,3:26], col="grey")
+  }
+}
+par(mfrow=c(2,4))
+for(i in 1:7){
+  plot(0:23, gp7$centers[i,], type="l", col="blue", lwd=3, xlab="", ylab="", ylim=c(0,1))
+  df=subset(table.appr, gp7_class == i)
+  ech=sample(1:nrow(df), 10)
+  df=df[ech,]
+  for(j in 1:nrow(df)){
+    lines(0:23, df[j,3:26], col="grey")
+  }
+}
+par(mfrow=c(2,5))
+for(i in 1:10){
+  plot(0:23, gp10$centers[i,], type="l", col="blue", lwd=3, xlab="", ylab="", ylim=c(0,1))
+  df=subset(table.appr, gp10_class == i)
+  ech=sample(1:nrow(df), 10)
+  df=df[ech,]
+  for(j in 1:nrow(df)){
+    lines(0:23, df[j,3:26], col="grey")
+  }
+}
+par(mfrow=c(1,1))
+```
+

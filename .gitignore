@@ -1,0 +1,9 @@
+.Rproj.user
+Velib.Rproj
+.Rhistory
+*.RData
+.Ruserdata
+Donnees/*
+*.txt
+echauffement.R
+correction_echauffement.R

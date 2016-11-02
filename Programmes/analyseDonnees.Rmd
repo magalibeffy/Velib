@@ -1,0 +1,251 @@
+---
+title: "Analyse de la table"
+author: "Thomas Pilaud"
+date: "28 octobre 2016"
+output: html_document
+---
+
+```{r, warning=F, message=F}
+require(knitr)
+require(dplyr)
+require(ggplot2)
+require(reshape2)
+library(data.table)
+library(lubridate)
+library(gridExtra)
+```
+
+```{r setup, echo = F}
+opts_knit$set(root.dir = normalizePath('../'))
+```
+
+```{r}
+load("Donnees/df.octobre.RData")
+```
+
+# Quelques explorations
+#### Analyse du champ 'status'
+```{r}
+table(df.octobre$status)
+
+stations.fermees <- df.octobre %>%
+  filter(status == "CLOSED") %>%
+  distinct(number)
+stations.fermees <- as.vector(t(stations.fermees))
+length(stations.fermees)
+```
+
+93 stations ont été fermées au moins une fois. On regarde si il y en a qui ont toujours été fermées.
+
+```{r}
+df.stations.fermees <- data.frame(table(df.octobre$number, df.octobre$status))
+df.stations.fermees <- dcast(df.stations.fermees, Var1 ~ Var2, value.var = "Freq")
+names(df.stations.fermees) <- c("number", "n_closed", "n_open")
+df.stations.fermees <- df.stations.fermees %>%
+  mutate(tx_closed = round(n_closed/(n_closed+n_open), 4)) %>%
+  filter(number %in% stations.fermees)
+summary(df.stations.fermees$tx_closed)
+sum(df.stations.fermees$tx_closed == 1)
+ggplot(df.stations.fermees) + aes(x=tx_closed) + geom_histogram(binwidth = 0.1) + theme_bw()
+```
+
+Certaines stations sont tout le temps fermées. On pourra les éliminer.
+
+```{r}
+df.octobre.jms.fermees <- subset(df.octobre, !number %in% stations.fermees)
+```
+
+
+# Qualité de données
+#### Vérification de l'absence de valeurs manquantes
+```{r}
+apply(df.octobre, 2, function(c) sum(is.na(c)))
+```
+
+#### Vérification des doublons
+On regarde les doublons number x last_update
+```{r}
+sum(duplicated(df.octobre[,c("number", "last_update")]))
+stations.doublons <- unique(df.octobre[duplicated(df.octobre[,c("number", "last_update")]), c("number", "last_update")])
+df.doublons <- inner_join(df.octobre, stations.doublons)
+```
+
+Si on enlève les stations fermées, ça ne change pas grand chose.
+```{r}
+sum(duplicated(df.octobre.jms.fermees[,c("number", "last_update")]))
+```
+
+En revanche, on a pas de doublons number x download_date
+```{r}
+sum(duplicated(df.octobre[,c("number", "download_date")]))
+```
+
+Parfois, il n'y a pas de mise à jour (last\_update) entre plusieurs téléchargements (download\_date) consécutifs. On ne sait pas si c'est normal (il n'y a pas eu de mouvement sur la station ou pas). En d'autres termes, on se demande si quand il n'y a aucun mouvement, les informations sont mises à jour.  
+  
+Pour répondre à cette question, on pourrait regarder si on a dans la table des exemples où le champ available\_bikes ne change pas alors que last\_udate change. Cependant, c'est peut-être parce qu'il y a eu du mouvement (une récupération ou une dépose de vélo) sans que cela ne change le nombre de vélos et de places disponibles. On ne peut donc pas répondre à cette question. Dans le doute, on considère qu'il n'y a pas d'anomalie, et donc on choisit d'utiliser le champ download\_date.
+
+On enlève les cas où le doublon est provoqué par une absence de mise à jour.
+```{r}
+df.octobre.dedoubl <- df.octobre %>%
+  select(-download_date) %>%
+  distinct
+sum(duplicated(df.octobre.dedoubl[,c("number", "last_update")]))
+```
+
+Il reste 32 doublons.
+
+```{r}
+stations.doublons <- unique(df.octobre.dedoubl[duplicated(df.octobre.dedoubl[,c("number", "last_update")]), c("number", "last_update")])
+df.doublons <- inner_join(df.octobre, stations.doublons)
+```
+
+Il y a 6 stations pour lesquelles on a des informations contradictoires pour la même date de mise à jour (last_update).
+
+#### Nombre d'enregistrements par jour
+```{r}
+ggplot(df.octobre) + aes(x=as.Date(download_date, tz="Europe/Paris")) + geom_bar() + theme_bw()
+```
+
+Pour l'instant on enleve le 1er et le dernier jour
+```{r}
+premier.jour <- as.Date("2016-09-01", format="%Y-%m-%d")
+dernier.jour <- as.Date("2016-10-01", format="%Y-%m-%d")
+df.octobre.cut <- df.octobre %>%
+  mutate(download_date_trunc = as.Date(download_date, tz="Europe/Paris")) %>%
+  filter(!download_date_trunc %in% c(premier.jour, dernier.jour))
+```
+
+On compte le nombre d'enregistrements par jour et par station
+```{r}
+nb.enreg <- df.octobre.cut %>%
+  group_by(download_date_trunc, number) %>%
+  summarise(nb_enreg = n()) %>%
+  ungroup
+
+summary(nb.enreg$nb_enreg)
+quantile(nb.enreg$nb_enreg, 0.01)
+```
+
+On a dans le cas général 72 enregistrements par jour et par station, ce qui fait 1 enregistrement toutes les 20 minutes.
+
+Délai maximum entre 2 enregistrements
+```{r}
+delai.enreg <- df.octobre %>%
+  select(number, download_date) %>%
+  group_by(number) %>%
+  mutate(rank = row_number(download_date),
+         prev_download_date = lag(download_date),
+         download_date_trunc = as.Date(download_date, tz="Europe/Paris")) %>%
+  ungroup %>%
+  filter(rank != 1) %>%
+  mutate(delai = as.numeric(difftime(download_date, prev_download_date, units="mins")))
+
+# delai.enreg <- as.data.table(df.octobre)
+# delai.enreg <- delai.enreg[, .(number, download_date)]
+# delai.enreg[, yrrank:=rank(download_date,ties.method="first"),by=number]
+# delai.enreg[, prev_download_date:= shift(download_date),by=number]
+# delai.enreg[, delai:= as.numeric(difftime(download_date, prev_download_date, units="mins"))]
+# delai.enreg <- setDT(delai.enreg)[, prev_download_date:= shift(download_date)][]
+
+summary(delai.enreg$delai)
+# ggplot(delai.enreg) + aes(x=delai) + geom_density(col="blue") + xlim(c(0,60)) + theme_bw()
+# 
+# quantile(delai.enreg$delai, 0.975)
+# quantile(delai.enreg$delai, 0.025)
+```
+Problème sur le lag : on a des délais négatifs, je ne comprends pas pourquoi.
+
+On vérifie que ces constats sont stables dans le temps.
+```{r}
+sample.delai.enreg <- delai.enreg[sample(1:nrow(delai.enreg), 10000),]
+ggplot(sample.delai.enreg) + aes(x=as.factor(download_date_trunc), y=delai) + geom_boxplot() +  theme_bw() + theme(axis.text.x = element_text(angle = 90))
+```
+
+On regarde combien de stations et combien de station.jour sont concernées par un délai supérieur à 60 minutes entre 2 enregistrements.
+```{r}
+length(unique(subset(delai.enreg, delai > 60)$number))
+nrow(delai.enreg %>%
+       filter(delai > 60) %>%
+       select(number, download_date_trunc) %>%
+       distinct)
+nrow(delai.enreg %>%
+       select(number, download_date_trunc) %>%
+       distinct)
+```
+
+Quasiment toutes les stations sont concernées par un délai supérieur à 60 minutes mais seulement 4% des station.jour le sont. On va pouvoir éliminer ces station.jour de l'analyse.
+
+#### Vérification : bike\_stands = available\_bike\_stands + available\_bikes
+```{r}
+df.octobre <- df.octobre %>%
+  mutate(is_ecart = ifelse(bike_stands != available_bike_stands + available_bikes, 1, 0),
+         prop_ecart = round(abs(bike_stands - (available_bike_stands + available_bikes))/bike_stands, 4))
+
+table(df.octobre$is_ecart)
+summary(subset(df.octobre, is_ecart == 1)$prop_ecart)
+ggplot(subset(df.octobre, is_ecart == 1)) + aes(x=prop_ecart) + geom_histogram() + theme_bw()
+ggplot(subset(df.octobre, is_ecart == 1)) + aes(x=prop_ecart) + geom_histogram() + xlim(c(0,1)) + theme_bw()
+```
+
+
+La proportion d'enregistrements ayant un écart est importante, mais cet écart est généralement assez faible.
+
+# Observation de l'indicateur taux de vélos disponibles sur quelques exemples
+```{r}
+load("Donnees/stations.RData")
+df.octobre.obs <- inner_join(df.octobre, stations)
+```
+
+
+```{r}
+df.octobre.obs <- df.octobre.obs %>%
+  mutate(taux_dispo = available_bikes / bike_stands)
+```
+
+Fonction de visualisation d'un profil
+```{r}
+profil.visu <- function(numero, date){
+  numero=as.character(numero)
+  date=as.Date(date, format="%Y-%m-%d")
+  df.obs <- df.octobre.obs %>%
+    filter(number == numero & as.Date(download_date, tz="Europe/Paris") == date)
+  # plot(taux_dispo~download_date, df.obs, type="b", ylim=c(0,1))
+  ggplot(df.obs) + aes(x=download_date, y=taux_dispo) + geom_line(size=1.5, col="blue") + ylim(c(0,1)) + ggtitle(paste(wday(date, label = TRUE), date)) + xlab("") + ylab("") + theme_bw() + theme(axis.text.x=element_blank())
+}
+
+profil.visu(3001, "2016-09-10")
+profil.visu(3001, "2016-09-13")
+
+profil.visu.compare <- function(numero, dates){
+  plots=list()
+  for(d in 1:length(dates)){
+    plots[[d]]=profil.visu(numero, dates[d])
+  }
+  marrangeGrob(plots, nrow=2, ncol=round(length(plots)/2))
+}
+```
+
+On regarde quelques exemples de stations. Par exemple, à proximité de la BNF, lieu de travail et d'étude.
+```{r}
+sem1=seq(as.Date("2016-09-03"), as.Date("2016-09-09"), by="day")
+sem2=seq(as.Date("2016-09-10"), as.Date("2016-09-16"), by="day")
+sem3=seq(as.Date("2016-09-17"), as.Date("2016-09-23"), by="day")
+sem4=seq(as.Date("2016-09-24"), as.Date("2016-09-30"), by="day")
+profil.visu.compare(13123, sem3)
+```
+
+A proximité d'Alesia, lieu résidentiel
+```{r}
+profil.visu.compare(14011, sem3)
+```
+
+A proximité de la tour eiffel, lieu touristique.
+```{r}
+profil.visu.compare(7024, sem3)
+```
+
+A proximité du parc de vincennes
+```{r}
+profil.visu.compare(12041, sem2)
+```
+
