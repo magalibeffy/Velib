@@ -84,6 +84,12 @@ Parfois, il n'y a pas de mise à jour (last\_update) entre plusieurs télécharg
   
 Pour répondre à cette question, on pourrait regarder si on a dans la table des exemples où le champ available\_bikes ne change pas alors que last\_udate change. Cependant, c'est peut-être parce qu'il y a eu du mouvement (une récupération ou une dépose de vélo) sans que cela ne change le nombre de vélos et de places disponibles. On ne peut donc pas répondre à cette question. Dans le doute, on considère qu'il n'y a pas d'anomalie, et donc on choisit d'utiliser le champ download\_date.
 
+```{r}
+df.octobre <- df.octobre %>%
+  mutate(download_date_trunc = as.Date(download_date, format="%Y-%m-%d"))
+```
+
+
 On enlève les cas où le doublon est provoqué par une absence de mise à jour.
 ```{r}
 df.octobre.dedoubl <- df.octobre %>%
@@ -189,6 +195,15 @@ ggplot(subset(df.octobre, is_ecart == 1)) + aes(x=prop_ecart) + geom_histogram()
 
 
 La proportion d'enregistrements ayant un écart est importante, mais cet écart est généralement assez faible.
+
+On regarde la répartition des station.jour en écart en fonction du temps
+```{r}
+ggplot(subset(df.octobre, is_ecart == 1)) + aes(x=download_date_trunc) + geom_bar() + theme_bw()
+df.octobre <- df.octobre %>%
+  mutate(download_hour = hour(download_date))
+ggplot(subset(df.octobre, is_ecart == 1)) + aes(x=download_hour) + geom_bar() + theme_bw()
+```
+
 
 # Observation de l'indicateur taux de vélos disponibles sur quelques exemples
 ```{r}

@@ -10,6 +10,8 @@ require(knitr)
 require(dplyr)
 require(ggplot2)
 require(kml)
+require(reshape2)
+# require(traj)
 ```
 
 ```{r setup, echo = F}
@@ -21,6 +23,7 @@ load("Donnees/table.appr.RData")
 don <- table.appr[,3:26]
 ```
 
+# Package base
 On regarde l'évolution du rapport variance intra / variance totale en fonction de k
 ```{r}
 res=vector("numeric", 19)
@@ -77,6 +80,7 @@ for(i in 1:10){
 par(mfrow=c(1,1))
 ```
 
+# Package kml
 On essaye le package kml. Choix du nombre de classes
 ```{r, eval=F}
 ech <- table.appr[sample(1:nrow(table.appr), 1000),]
@@ -97,14 +101,16 @@ save(klm4, file="Donnees/klm4.RData")
 ```{r fig.width=14, fig.height=10}
 load("Donnees/klm4.RData")
 klm.clusters <- getClusters(klm4, 4)
-levels(klm.clusters) = seq(1, 4, 1)
+levels(klm.clusters) <- 1:4
 table.appr$klm4 <- klm.clusters
+klm.clusters.df <- table.appr %>%
+  select(number, download_date_trunc, klm4)
 klm4.mean <- calculTrajMean(table.appr[,3:26], klm.clusters)
 par(mfrow=c(2,2))
 for(i in 1:4){
-  plot(0:23, klm4.mean[i,], type="l", col="blue", lwd=3, xlab="", ylab="", ylim=c(0,1))
+  plot(0:23, klm4.mean[i,], type="l", col=i+1, lwd=3, xlab="", ylab="", ylim=c(0,1))
   df=subset(table.appr, klm4 == i)
-  ech=sample(1:nrow(df), 10)
+  ech=sample(1:nrow(df), 20)
   df=df[ech,]
   for(j in 1:nrow(df)){
     lines(0:23, df[j,3:26], col="grey")
@@ -112,4 +118,69 @@ for(i in 1:4){
 }
 par(mfrow=c(1,1))
 ```
+
+Quand on regarde les courbes une par une, on voit que les classes sont assez hétérogènes.
+```{r fig.width=18, fig.height=12}
+load("Donnees/df.constr.table.RData")
+for(i in 1:4){
+  df <- subset(klm.clusters.df, klm4 == i)
+  ech=sample(1:nrow(df), 20)
+  df <- df[ech,]
+  df <- inner_join(df, df.constr.table)
+  print(ggplot(df) + aes(x=download_hour, y=taux_dispo) + geom_line(col=i) + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw())
+}
+```
+
+
+# Package traj
+J'ai testé le package traj, il ne fonctionne pas sur nos données. Je ne suis pas parvenu à comprendre pourquoi. On va implémenter la méthode à la main.
+
+## Measures
+```{r, eval=F}
+source("Programmes/package_traj_rewrited.R")
+data <- don
+time <- data.frame(t(0:23))
+time  <- time[rep(seq_len(nrow(time)), each=nrow(data)),]
+trajMeasures <- step1measures.rewrited(data, time)
+sapply(trajMeasures, function(x) sum(is.na(x)))
+save(trajMeasures, file="Donnees/trajMeasures.RData")
+```
+
+On essaye de faire un clustering sur les indicateurs calculés précédemment. On regarde la corrélation des variables pour décider quelles variables on conserve.
+```{r}
+load("Donnees/trajMeasures.RData")
+source("http://www.sthda.com/upload/rquery_cormat.r")
+cor <- rquery.cormat(trajMeasures[,2:25], graphType="heatmap")
+keep <- c(1, 2, 4, 5, 17, 19, 24)
+# keep <- c(1, 5, 19)
+keep <- keep + 1
+trajMeasures.scale <- data.frame(cbind(trajMeasures[,1], scale(trajMeasures[,2:25])))
+df <- trajMeasures.scale[,keep]
+```
+
+On regarde quel est le nombre de classes le plus pertinent.
+```{r}
+res=vector("numeric", 19)
+for(k in 2:20){
+  kmeans.k=kmeans(df, k, iter.max = 100)
+  res[k-1]=kmeans.k$tot.withinss/kmeans.k$totss
+}
+plot(2:20, res, type="b")
+```
+
+On choisit 6 classes.
+```{r fig.width=18, fig.height=12}
+kmeans.traj.6 <- kmeans(df, 6, iter.max=100)
+table.appr$traj6 <- kmeans.traj.6$cluster
+traj.clusters.df <- table.appr %>%
+  select(number, download_date_trunc, traj6)
+for(i in 1:6){
+  df <- subset(traj.clusters.df, traj6 == i)
+  ech=sample(1:nrow(df), 20)
+  df <- df[ech,]
+  df <- inner_join(df, df.constr.table)
+  print(ggplot(df) + aes(x=download_hour, y=taux_dispo) + geom_line(col=i) + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw())
+}
+```
+
 

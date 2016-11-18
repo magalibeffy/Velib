@@ -1,11 +1,16 @@
 require(dplyr)
 require(lubridate)
+require(reshape2)
 
 load("Donnees/df.octobre.RData")
 
-# On enleve les stations fermees
+# On construit la variable taux de velos disponibles
 df.constr.table <- df.octobre %>%
-  filter(status == "OPEN") %>%
+  mutate(taux_dispo = available_bikes / bike_stands)
+
+# On enleve les station.jour fermes et les station.jour qui ont un taux_dispo > 1
+df.constr.table <- df.constr.table %>%
+  filter(status == "OPEN" & taux_dispo <= 1) %>%
   mutate(download_date_trunc = as.Date(download_date, tz="Europe/Paris"))
 
 # On compte le nombre d'enregistrements par station.jour, on ne garde que ceux
@@ -47,10 +52,8 @@ nb.enreg <- df.constr.table %>%
 
 table(nb.enreg$nb_enreg)
 
-df.constr.table <- df.constr.table %>%
-  mutate(taux_dispo = available_bikes / bike_stands)
-
 table.appr <- dcast(df.constr.table, number + download_date_trunc ~ download_hour, value.var = "taux_dispo")
 names(table.appr) <- c("number", "download_date_trunc", paste0("X",seq(0,23,1)))
 
 save(table.appr, file="Donnees/table.appr.RData")
+save(df.constr.table, file="Donnees/df.constr.table.RData")
