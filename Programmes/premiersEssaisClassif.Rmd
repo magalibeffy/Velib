@@ -12,6 +12,7 @@ require(ggplot2)
 require(kml)
 require(reshape2)
 # require(traj)
+require(fpca)
 ```
 
 ```{r setup, echo = F}
@@ -183,4 +184,53 @@ for(i in 1:6){
 }
 ```
 
+
+# Package fpca
+On sélectionne un échantillon de courbes journalières. On les visualise.
+```{r}
+load("Donnees/df.constr.table.RData")
+df.constr.table$station.jour <- paste(df.constr.table$number, df.constr.table$download_date_trunc)
+ech=sample(unique(df.constr.table$station.jour), 500)
+df.constr.table.ech <- df.constr.table %>%
+  filter(station.jour %in% ech & download_hour %in% c(0, 3, 6, 9, 12, 15, 18, 21))
+# print(ggplot(df.constr.table.ech) + aes(x=download_date, y=taux_dispo) + geom_line(col="blue") + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_blank()))
+```
+
+
+```{r}
+df.fpca<- df.constr.table.ech[, c("number", "taux_dispo", "download_date")]
+df.fpca$download_date <- as.numeric(df.fpca$download_date, origin="1970-01-01")
+min.date <- min(df.fpca$download_date)
+max.date <- max(df.fpca$download_date)
+df.fpca$download_date <- (df.fpca$download_date - min.date) / (max.date - min.date)
+## candidate models for fitting
+M.set<-c(4,5,6)
+r.set<-c(2,3,4)
+##parameters for fpca.mle
+ini.method="EM"
+basis.method="bs"
+sl.v=rep(0.5,10)
+max.step=50
+grid.l=seq(0,1,0.01)
+grids=seq(0,1,0.01)
+
+df.fpca <- as.matrix(df.fpca)
+result<-fpca.mle(df.fpca, M.set,r.set,ini.method, basis.method,sl.v,max.step,grid.l,grids)
+
+names(result)
+
+grids.new<-result$grid
+M<-result$selected_model[1]
+r<-result$selected_model[2]
+evalest<-result$eigenvalues
+eigenfest<-result$eigenfunctions
+sig2est<-result$error_var
+muest<-result$fitted_mean
+par(mfrow=c(2,2))
+for(i in 1:r){
+  plot(grids.new,eigenfest[i,],ylim=range(eigenfest),xlab="time",ylab=paste("eigenfunction",i))
+}
+
+fpcs<-fpca.score(df.fpca,grids.new,muest,evalest,eigenfest,sig2est,r)
+```
 
