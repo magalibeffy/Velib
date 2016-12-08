@@ -1,0 +1,307 @@
+---
+title: "Classification Lundi"
+author: "Magali Beffy"
+date: "8th of December 2016"
+output: html_document
+---
+
+```{r, warning=F, message=F}
+require(knitr)
+require(data.table)
+require(ggplot2)
+require(fda)
+require(reshape2)
+require(dplyr)
+require(gridExtra)
+require(lattice)
+```
+
+```{r setup, include=FALSE}
+opts_knit$set(root.dir = 'C:/UserM/ML/201611_Project/Data/')
+##knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, echo=FALSE}
+load("2016.oct.RData")
+setkey(essai,Index1,download_date)
+```
+Chargement de la table effectué
+
+Ensuite, étape 0 : preparation des signaux sous forme matricielle pour simplifier mes calculs
+
+```{r, echo=FALSE}
+weekday <- c("lundi","mardi","mercredi","jeudi","vendredi","samedi","dimanche")
+essaiJ <- list()
+for (i in 1:length(weekday)){
+  essaiJ[[i]] <- copy(essai[Daym==weekday[i],])
+}
+essaiL <- essaiJ[[1]]
+essaiL <- essaiL[!is.na(tx.occup),]
+essai <- essaiL
+setkey(essai,Index1,download_date)
+essai[,mean.tx.occup:=mean(tx.occup),by=Index1]
+essai[,sd.tx.occup:=sd(tx.occup),by=Index1]
+essai[,max.tx.occup:=max(tx.occup),by=Index1]
+essai[,min.tx.occup:=min(tx.occup),by=Index1]
+essai[,extreme.v.tx.occup:=(abs(tx.occup)>mean.tx.occup+2*sd.tx.occup),by=Index1]
+essai[,extreme.tx.occup:=sum(extreme.v.tx.occup),by=Index1][,extreme.v.tx.occup:=NULL]
+essaiT <- essai[,comptage:=seq(1,.N,1),by=Index1]
+essaiT <- essaiT[,.(Index1,comptage,tx.occup)]
+essaiT <- melt(essaiT,id=c("Index1","comptage"))
+essaiT <- acast(essaiT, Index1 ~ comptage ~ variable)
+coef.e1 <-as.data.table(rownames(essaiT))
+coef.e1 <- coef.e1[,Index1:=V1][,V1:=NULL]
+coef.e1 <- cbind(coef.e1,as.data.table(essaiT[,,1]))
+nom <- names(coef.e1)
+test <- nom[2:73]
+test <- as.character(c(nom[1],lapply(test, function(x) paste0("tx.occup.",as.character(x)))))
+setnames(coef.e1,test)
+#View(coef.e1)
+DT.Matrix <- coef.e1
+rm(coef.e1)
+coef.e1 <- unique(essai[,.(Index1,mean.tx.occup,sd.tx.occup,max.tx.occup,min.tx.occup,extreme.tx.occup)])
+setkey(coef.e1,Index1)
+setkey(DT.Matrix,Index1)
+DT.Matrix <- DT.Matrix[coef.e1]
+DT.Matrix <- DT.Matrix[apply(DT.Matrix,1,function(x) !any(is.na(x))),]
+rm(coef.e1)
+```
+
+Etape 1: regression penalisee des signaux cylindres sur la base de splines de degre 4.
+
+```{r, echo=FALSE}
+plotGCVRMSE.fd = function(lamlow, lamhi, lamdel, argvals, y,
+                          fdParobj, wtvec=NULL, fdnames=NULL, covariates=NULL) {
+  loglamvec = seq(lamlow, lamhi, lamdel)
+  loglamout = matrix(0,length(loglamvec),4)
+  m = 0
+  for (loglambda in loglamvec) {
+    m = m + 1
+    loglamout[m,1] = loglambda
+    fdParobj$lambda = 10^(loglambda)
+    smoothlist = smooth.basis(argvals, y, fdParobj, wtvec=wtvec,
+                              fdnames=fdnames, covariates=covariates)
+    xfd = smoothlist$fd # the curve smoothing the data
+    loglamout[m,2] = smoothlist$df
+    # degrees of freedom in the smoothing curve
+    loglamout[m,3] = sqrt(mean((eval.fd(argvals, xfd) - y)^2))
+    loglamout[m,4] = mean(smoothlist$gcv) # the mean of the N gcv values
+  }
+  cat("log10 lambda, deg. freedom, RMSE, gcv\n")
+  for (i in 1:m) {
+    cat(format(round(loglamout[i,],6)))
+    cat("\n")
+  }
+  par(mfrow=c(3,1))
+  plot(loglamvec, loglamout[,2], type="b")
+  title("Degrees of freedom")
+  plot(loglamvec, loglamout[,3], type="b")
+  title("RMSE")
+  plot(loglamvec, loglamout[,4], type="b")
+  title("Mean gcv")
+  par(mfrow=c(1,1))
+  return(loglamout)
+}
+```
+
+
+POur cela utilisation du package fda avec une penalisation en fonction du degre de smoothness du signal, mesuree par la derivee seconde.
+
+```{r}
+X <- seq(0,24*60*60,20*60)
+X <- X[-73]/86400
+argvals <- X
+n=length(X) ##nombre de points d'observation
+N=length(DT.Matrix) ## nombre de signaux
+
+norder <- 4
+nbasis <- length(X)+4-2
+rg <- c(min(X),max(X))
+bbasis <- create.bspline.basis(rg,nbasis,norder)
+lambda <- 10^(-5)
+dpenal <- 2
+fdParobj <- fdPar(fdobj=bbasis, Lfdobj=dpenal, lambda=lambda)  ## penalisation par D2 et lambda=0.01
+y <- DT.Matrix[,2:73]
+y <- as.matrix(y)
+y <- t(y)
+smoothsignal <- smooth.basis(argvals,y,fdParobj)
+xfd <- smoothsignal$fd
+df <- smoothsignal$df
+gcv <- smoothsignal$gcv
+RMSE <- sqrt(mean((eval.fd(argvals,xfd)-y)^2))
+# Display the results, note that a gcv value is returned for EACH curve,
+# and therefore that a mean gcv result is reported
+cat(round(c(df,RMSE,mean(gcv)),3),"\n")
+# the fits are plotted interactively by plotfit.fd ... click to advance
+# plot fit commenté sinon tu dois appuyer sur entree chaque fois
+                                      ##### plotfit.fd(y, argvals, xfd)
+# Repeat these results for a range of log10(lambda) values
+
+# donc on voit que plus plat entre -8 et -4
+loglamout = plotGCVRMSE.fd(-12, -4, 0.1, argvals, y, fdParobj)
+loglamout[which.min(loglamout[,4]),]
+loglamout[(loglamout[,1]==-5.0),]
+loglamout[(loglamout[,1]==-4.9),]
+loglamout[(loglamout[,1]==-4.0),]
+```
+Au vu de ces paramètres on voit que la cross validation preconiserait un df egal à 37 splines, ce qui est beaucoup trop élevé. J'ai fait le choix de prendre un degre de liberte qui donnerait a peu pres le meme gcve qu'un degre de liberte eleve, ce qui me donne environ 18 ou 17.
+
+Lorsqu'on relance le lissage de nos signaux sur cette base de splines à 18 degres de libertes, 
+
+
+```{r, echo=FALSE}
+lambda.chosen <- 10^(-5) ##exp(loglamout[(loglamout[,1]==-5),1])
+nbasis.chosen <- 18 #round(loglamout[which.min(loglamout[,4]),2])
+X <- seq(0,24*60*60,20*60)
+X <- X[-73]/86400
+argvals <- X
+n=length(X) ##nombre de points d'observation
+N=length(DT.Matrix) ## nombre de signaux
+norder <- 4
+nbasis <- nbasis.chosen
+rg <- c(min(X),max(X))
+bbasis <- create.bspline.basis(rg,nbasis,norder)
+lambda <- lambda.chosen
+dpenal <- 2
+fdParobj <- fdPar(fdobj=bbasis, Lfdobj=dpenal, lambda=lambda)  ## penalisation par D2 et lambda=0.01
+y <- DT.Matrix[,2:73]
+y <- as.matrix(y)
+y <- t(y)
+smoothsignal <- smooth.basis(argvals,y,fdParobj)
+xfd <- smoothsignal$fd
+df  <- smoothsignal$df
+gcv <- smoothsignal$gcv
+yspline <- eval.fd(argvals,xfd) ## 72,3579 --> a garder!!!!
+RMSE <- sqrt(mean((yspline-y)^2))
+
+yspline <- cbind(DT.Matrix[,1],t(yspline)) ### 3579,73
+nom <- names(yspline)
+test <- nom[2:73]
+test <- as.character(c(nom[1],lapply(test, function(x) paste0("Spline.tx.occup.",as.character(substr(x,2,stop=5))))))
+setnames(yspline,test)
+DTS <- melt(as.data.table(yspline), id=1) #
+DTS[,yspline:=value]
+DTS[,value:=NULL]
+setkey(DTS,Index1,variable)
+DTS[,comptage:=seq(1,.N,1),by=Index1][,variable:=NULL]
+setkey(DTS,Index1,comptage)
+coef.fd <- cbind(DT.Matrix[,1],t(smoothsignal$fd$coefs))
+dim(coef.fd)
+coef.fd <- as.data.table(coef.fd,key=Index1)
+cat(round(c(df,RMSE,mean(gcv)),3),"\n")
+```
+
+Voici le resultat du lissage pour quelques signaux
+```{r}
+#plotfit.fd(y, argvals, xfd,ask=FALSE,index=c(2,3))
+```
+
+une fois ce lissage effectue, je l'ai utilise pour faire une Fonctional Principal Component Analysis à l'aide de la fonction 
+
+```{r, echo=FALSE}
+pcalist    = pca.fd(smoothsignal$fd,5,centerfns = FALSE)
+```
+
+```{r, echo=TRUE}
+print('Valeurs propres de chacune des fonctionnelles associées')
+print(pcalist$values)
+print('part expliquée par les 5 premieres')
+100*sum(pcalist$values[1:5])/sum(pcalist$values)
+```
+
+Allure des fonctionnelles obtenues
+
+```{r, echo=TRUE}
+plot.pca.fd(pcalist,ask=FALSE)
+```
+
+```{r, echo=FALSE}
+coef.fd <- pcalist$scores
+# aevc les variables en plus coef.fd <- cbind(DT.Matrix[,c(1,74:78)],coef.fd)
+coef.fd <- cbind(DT.Matrix[,1],coef.fd)
+coef.fd <- as.data.table(coef.fd,key=Index1)
+tmp1 <- getbasismatrix(X,bbasis,nderiv=0,returnMatrix = TRUE) ## size [72,18]
+tmp2 <- pcalist$scores                                        ## size [3579,5]
+tmp3 <- pcalist$harmonics$coefs                              ## size [18,5]
+yhat <- tmp2 %*% t(tmp3) %*% t(tmp1)  ## me renverra [3579,72]
+yhat <- cbind(DT.Matrix[,1],yhat)
+nom <- names(yhat)
+test <- nom[2:73]
+test <- as.character(c(nom[1],lapply(test, function(x) paste0("FPCA.tx.occup.",as.character(substr(x,2,stop=5))))))
+setnames(yhat,test)
+DT <- melt(as.data.table(yhat), id=1) #
+DT[,yPCA:=value]
+DT[,value:=NULL]
+setkey(DT,Index1,variable)
+DT[,comptage:=seq(1,.N,1),by=Index1][,variable:=NULL]
+setkey(DT,Index1,comptage)
+DT <- DT[DTS]
+setkey(essai,Index1,comptage)
+essai <- essai[DT]
+```
+
+Maintenant on peut procéder à la determination des classes, algo du plus proche voisin tout simple kmeans,
+
+```{r}
+coef.fd.t <- coef.fd
+don <- coef.fd.t[,-1]
+res=vector("numeric", 19)
+for(k in 2:20){
+  kmeans.k=kmeans(don, k,iter.max = 100,nstart=10)
+  res[k-1]=kmeans.k$tot.withinss/kmeans.k$totss
+}
+plot(2:20, res, type="b")
+```
+
+```{r, echo=FALSE}
+gp5  <- kmeans(don,5,iter.max = 100,nstart=10)
+gp7  <- kmeans(don,7,iter.max = 100,nstart=10)
+gp10 <- kmeans(don,10,iter.max = 100,nstart=10)
+tmp <- cbind(coef.fd.t[,1],gp5$cluster,gp7$cluster,gp10$cluster)
+names(tmp)[2:4] <- c("cluster5","cluster7","cluster10")
+tmpdt <- data.table(tmp,key='Index1')
+rm(tmp)
+
+essai_t <- essai[(Index1 %in% tmpdt[,Index1]),]
+essai_t <- essai_t[tmpdt]
+setkey(essai_t,Index1,comptage,cluster10)
+#mynames = c("moybruteC10","moySplineC10","moyFPCAC10")
+#tmp1 <- essai_t[,(mynames) := list(mean(tx.occup),mean(yspline),mean(yPCA)),by=.(Freq_m,cluster10)][,.(Freq_m,cluster10,moybruteC10,moySplineC10,moyFPCAC10)][,Index1:="MoyC"]
+tmp1 <- essai_t[, m_tx.occup:= mean(tx.occup),by=.(comptage,cluster10)][,.(comptage,cluster10,m_tx.occup)][,Index1:="MoyBC"]
+tmp1 <- tmp1[,tx.occup:=m_tx.occup][,m_tx.occup:=NULL]
+setkey(tmp1,cluster10,comptage)
+tmp1 <- unique(tmp1)
+tmp2 <- essai_t[, m_yspline:= mean(yspline),by=.(comptage,cluster10)][,.(comptage,cluster10,m_yspline)][,Index1:="MoySC"]
+tmp2 <- tmp2[,yspline:=m_yspline][,m_yspline:=NULL]
+setkey(tmp2,cluster10,comptage)
+tmp2 <- unique(tmp2)
+tmp3 <- essai_t[, m_yPCA:= mean(yPCA),by=.(comptage,cluster10)][,.(comptage,cluster10,m_yPCA)][,Index1:="MoyPCC"]
+tmp3 <- tmp3[,yPCA:=m_yPCA][,m_yPCA:=NULL]
+setkey(tmp3,cluster10,comptage)
+tmp3 <- unique(tmp3)
+```
+
+
+Proportion de chaque classe obtenue
+```{r}
+## PROPORTION DE CHAQUE CLASSE 
+tmp <- unique(essai_t[,.(cluster10,Index1)])
+print(round(100*table(tmp$cluster10)/length(tmp$cluster10),2))
+```
+
+```{r}
+## AVEC 10 CLUSTERS
+essaiL5.s1   <- essai_t[(cluster10==1),]
+presentL5.s1 <- sample(unique(essaiL5.s1$Index1),5)
+essaiL5.s1   <- essaiL5.s1[(Index1 %in% presentL5.s1),.(Index1,comptage,cluster10,yspline)]
+essaiL5.s1   <- rbind(essaiL5.s1,tmp2[(cluster10==1),])
+gp           <- ggplot(essaiL5.s1, aes(x = comptage, y = yspline,colors=Index1)) + geom_line() + geom_point(data=tmp2[(cluster10==1),], aes(x=comptage,y=yspline),color="red")
+for (i in 1:10){
+  essaiL5.s1 <- copy(essai_t[(cluster10==i)])
+  presentL5.s1 <- sample(unique(essaiL5.s1$Index1),25)
+  essaiL5.s1 <- copy(essaiL5.s1[(Index1 %in% presentL5.s1),])
+  gp[[i]] <- ggplot(essaiL5.s1, aes(x = comptage, y = yspline,colors=Index1)) + geom_line() + geom_point(data=tmp2[(cluster10==i),], aes(x=comptage,y=yspline),color="red")
+}
+grid.arrange(gp[[1]], gp[[2]], gp[[3]], gp[[4]], gp[[5]],gp[[6]], gp[[7]], gp[[8]], gp[[9]], gp[[10]], ncol=2, nrow = 5)
+```
