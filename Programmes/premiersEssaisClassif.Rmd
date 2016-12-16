@@ -9,9 +9,9 @@ output: html_document
 require(knitr)
 require(dplyr)
 require(ggplot2)
+require(lubridate)
 require(kml)
 require(reshape2)
-# require(traj)
 require(fpca)
 ```
 
@@ -20,7 +20,7 @@ opts_knit$set(root.dir = normalizePath('../'))
 ```
 
 ```{r}
-load("Donnees/table.appr.RData")
+load("Donnees/table.appr.ech.RData")
 don <- table.appr[,3:26]
 ```
 
@@ -29,7 +29,7 @@ On regarde l'évolution du rapport variance intra / variance totale en fonction 
 ```{r}
 res=vector("numeric", 19)
 for(k in 2:20){
-  kmeans.k=kmeans(don, k)
+  kmeans.k=kmeans(don, k, iter.max=50)
   res[k-1]=kmeans.k$tot.withinss/kmeans.k$totss
 }
 plot(2:20, res, type="b")
@@ -38,9 +38,9 @@ plot(2:20, res, type="b")
 
 On commence par faire un k-means avec 5, 7 et 10 centres pour voir ce qui se passe
 ```{r}
-gp5 <- kmeans(don,5)
-gp7 <- kmeans(don,7)
-gp10 <- kmeans(don,10)
+gp5 <- kmeans(don,5, nstart=10)
+gp7 <- kmeans(don,7, nstart=10)
+gp10 <- kmeans(don,10, nstart=10)
 ```
 
 On trace les centres des classes ainsi que 10 station.jour pour chaque classe pris au hasard
@@ -122,7 +122,7 @@ par(mfrow=c(1,1))
 
 Quand on regarde les courbes une par une, on voit que les classes sont assez hétérogènes.
 ```{r fig.width=18, fig.height=12}
-load("Donnees/df.constr.table.RData")
+load("Donnees/df.constr.table.ech.RData")
 for(i in 1:4){
   df <- subset(klm.clusters.df, klm4 == i)
   ech=sample(1:nrow(df), 20)
@@ -136,7 +136,7 @@ for(i in 1:4){
 # Package traj
 J'ai testé le package traj, il ne fonctionne pas sur nos données. Je ne suis pas parvenu à comprendre pourquoi. On va implémenter la méthode à la main.
 
-## Measures
+On commence par calculer les 24 indicateurs sur chaque courbe.
 ```{r, eval=F}
 source("Programmes/package_traj_rewrited.R")
 data <- don
@@ -169,56 +169,47 @@ for(k in 2:20){
 plot(2:20, res, type="b")
 ```
 
-On choisit 6 classes.
-```{r fig.width=18, fig.height=12}
-kmeans.traj.6 <- kmeans(df, 6, iter.max=100)
-table.appr$traj6 <- kmeans.traj.6$cluster
-traj.clusters.df <- table.appr %>%
-  select(number, download_date_trunc, traj6)
-for(i in 1:6){
-  df <- subset(traj.clusters.df, traj6 == i)
-  ech=sample(1:nrow(df), 20)
-  df <- df[ech,]
-  df <- inner_join(df, df.constr.table)
-  print(ggplot(df) + aes(x=download_hour, y=taux_dispo) + geom_line(col=i) + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw())
-}
-```
+On voit que le ratio variance intra / variance totale est très élevé, même avec un nombre de classe égal à 10.
 
+Cette méthode ne fonctionne pas très bien en l'état. On pourrait la pousser en sélectionnant mieux les mesures avant d'effectuer la classification, voire en mixant ces mesures avec des taux de dispo sélectionnés à des heures clés de la journée.
 
 # Package fpca
-On sélectionne un échantillon de courbes journalières. On les visualise.
+On sélectionne un échantillon de 1000 courbes journalières (station.jour). On crée une variable time qui compte la proporion de la journée écoulée depuis minuit.
 ```{r}
-load("Donnees/df.constr.table.RData")
-df.constr.table$station.jour <- paste(df.constr.table$number, df.constr.table$download_date_trunc)
-ech=sample(unique(df.constr.table$station.jour), 500)
-df.constr.table.ech <- df.constr.table %>%
-  filter(station.jour %in% ech & download_hour %in% c(0, 3, 6, 9, 12, 15, 18, 21))
-# print(ggplot(df.constr.table.ech) + aes(x=download_date, y=taux_dispo) + geom_line(col="blue") + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw() + theme(axis.text.x=element_blank(), axis.text.y=element_blank()))
+load("Donnees/df.constr.table.ech.RData")
+df.constr.table$time <- (df.constr.table$download_hour*60*60 + df.constr.table$download_minute*60 + second(df.constr.table$download_date))/(24*60*60)
 ```
 
-
+On construit une matrice composée de ces station.jour, du taux de dispo et du temps pour réaliser l'apprentissage de la base de fonctions.
 ```{r}
-df.fpca<- df.constr.table.ech[, c("number", "taux_dispo", "download_date")]
-df.fpca$download_date <- as.numeric(df.fpca$download_date, origin="1970-01-01")
-min.date <- min(df.fpca$download_date)
-max.date <- max(df.fpca$download_date)
-df.fpca$download_date <- (df.fpca$download_date - min.date) / (max.date - min.date)
+df.fpca<- df.constr.table[, c("station.jour", "taux_dispo", "time")]
+df.fpca$station.jour <- as.numeric(match(df.fpca$station.jour, station.jour.vector))
+df.fpca <- as.matrix(df.fpca)
+ech=sample(1:length(station.jour.vector), 1000)
+df.fpca.ech <- df.fpca[df.fpca[,1]%in%ech,]
+```
+
+On réalise l'apprentissage de la base de fonctions.
+```{r, eval=F}
 ## candidate models for fitting
-M.set<-c(4,5,6)
-r.set<-c(2,3,4)
+M.set<-20
+r.set<-5
 ##parameters for fpca.mle
 ini.method="EM"
 basis.method="bs"
 sl.v=rep(0.5,10)
-max.step=50
+max.step=100
 grid.l=seq(0,1,0.01)
 grids=seq(0,1,0.01)
 
-df.fpca <- as.matrix(df.fpca)
-result<-fpca.mle(df.fpca, M.set,r.set,ini.method, basis.method,sl.v,max.step,grid.l,grids)
+result<-fpca.mle(df.fpca.ech, M.set,r.set,ini.method,basis.method,sl.v,max.step,grid.l,grids)
 
-names(result)
+save(result, file="Donnees/fpca.mle.result.ech.RData")
+```
 
+On regarde la forme des fonctions obtenues.
+```{r}
+load("Donnees/fpca.mle.result.ech.RData")
 grids.new<-result$grid
 M<-result$selected_model[1]
 r<-result$selected_model[2]
@@ -226,11 +217,111 @@ evalest<-result$eigenvalues
 eigenfest<-result$eigenfunctions
 sig2est<-result$error_var
 muest<-result$fitted_mean
-par(mfrow=c(2,2))
+par(mfrow=c(2,3))
 for(i in 1:r){
-  plot(grids.new,eigenfest[i,],ylim=range(eigenfest),xlab="time",ylab=paste("eigenfunction",i))
+  plot(grids.new,eigenfest[i,],ylim=range(eigenfest),type="l", col="blue", lwd=2, xlab="time",ylab=paste("eigenfunction",i))
 }
-
-fpcs<-fpca.score(df.fpca,grids.new,muest,evalest,eigenfest,sig2est,r)
+par(mfrow=c(1,1))
 ```
 
+On projète les station.jour sur cette base de fonctions, on obtient r coefficients pour chaque courbe (station.jour).
+```{r, eval=F}
+fpcs<-fpca.score(df.fpca,grids.new,muest,evalest,eigenfest,sig2est,r)
+save(fpcs, file="Donnees/fpcs.ech.RData")
+```
+
+On regarde comment on arrive à recomposer une courbe à partir de ses coefficients.
+```{r fig.width=18, fig.height=12}
+load("Donnees/fpcs.ech.RData")
+
+plot.sample <- sample(1:length(station.jour.vector), 18)
+plot.sample<-setdiff(plot.sample, ech)
+
+pred<-fpca.pred(fpcs[plot.sample,], muest,eigenfest)
+
+N<-length(grids.new)
+par(mfrow=c(3,3))
+for (i in 1:length(plot.sample)){
+id<-plot.sample[i] ##for curve i
+t.c<-df.fpca[df.fpca[,1]==id,3] ##measurement points
+t.proj<-ceiling(N*t.c) ##measurement points projected on the grid
+y.c<-df.fpca[df.fpca[,1]==id,2] ##obs
+y.pred.proj<-pred[t.proj,i]
+#plots
+plot(t.c,y.c,ylim=c(0,1),xlab="time",ylab="obs", main=paste("predicted trajectory of curve", id))
+points(grids.new,pred[,i],col=3,type='l')
+points(t.c,y.pred.proj,col=2, pch=2) ##predicted measurements at observed measurement times
+}
+par(mfrow=c(1,1))
+```
+
+C'est assez propre. On peut dire que nos 5 coefficients résument bien la courbe. On fait maintenant un kmeans sur ces 5 coefficients.
+```{r, warning=F}
+res=vector("numeric", 19)
+for(k in 2:20){
+  kmeans.k=kmeans(fpcs, k, iter.max=100)
+  res[k-1]=kmeans.k$tot.withinss/kmeans.k$totss
+}
+plot(2:20, res, type="b")
+```
+
+On choisit 5 classes.
+
+```{r}
+fpca.kmeans<-kmeans(fpcs, 5, iter.max=200, nstart=10)
+fpca.clusters.df <- data.frame(cbind(station.jour.vector, fpca.kmeans$cluster))
+names(fpca.clusters.df)<-c("station.jour", "fpca_cluster")
+df.constr.table.fpca.kmeans <- inner_join(df.constr.table, fpca.clusters.df)
+```
+On trace les centres des classes
+```{r}
+centers <- fpca.pred(fpcs[plot.sample,], muest,eigenfest)
+par(mfrow=c(2,3))
+for(i in 1:length(unique(fpca.kmeans$cluster))){
+  plot(centers[,i], type="l", col=i, lwd=3, xlab="", ylab="", ylim=c(0,1))
+}
+par(mfrow=c(1,1))
+```
+
+On trace également quelques courbes pour chaque classe.
+```{r fig.width=18, fig.height=12}
+for(i in 1:length(unique(fpca.kmeans$cluster))){
+  df <- subset(df.constr.table.fpca.kmeans, fpca_cluster == i)
+  ech=sample(unique(df$station.jour), 20)
+  df <- subset(df, station.jour %in% ech)
+  print(ggplot(df) + aes(x=download_hour, y=taux_dispo) + geom_line(col=i) + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw())
+}
+```
+
+On essaye une cah. On commence par faire un kmeans avec 2000 centres.
+```{r, evel = F}
+kmeans.2000 <- kmeans(fpcs, 2000, iter.max = 100, nstart = 10)
+save(kmeans.2000, file="Donnees/kmeans.2000.RData")
+```
+
+On fait ensuite une cah sur les 2000 centres.
+```{r, warning=F}
+load("Donnees/kmeans.2000.RData")
+d=dist(kmeans.2000$centers)
+cah=hclust(d, method="complete")
+plot(cah)
+abline(h=0.67, col="red")
+res=cutree(cah, h=0.67)
+res2=res[kmeans.2000$cluster]
+
+fpca.cah.clusters.df <- data.frame(cbind(station.jour.vector, res2))
+names(fpca.cah.clusters.df)<-c("station.jour", "fpca_cluster")
+df.constr.table.fpca.cah <- inner_join(df.constr.table, fpca.cah.clusters.df)
+```
+
+```{r fig.width=18, fig.height=12}
+for(i in 1:length(unique(res2))){
+  df <- subset(df.constr.table.fpca.cah, fpca_cluster == i)
+  ech=sample(unique(df$station.jour), 20)
+  df <- subset(df, station.jour %in% ech)
+  print(ggplot(df) + aes(x=download_hour, y=taux_dispo) + geom_line(col=i) + ylim(c(0,1)) + facet_wrap(~ number + download_date_trunc, scales="free") + theme_bw())
+}
+```
+
+# Package fda
+Voir travaux Magali
